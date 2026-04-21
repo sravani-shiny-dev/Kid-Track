@@ -26,6 +26,7 @@ function NotifBell() {
         onClick={() => setOpen((current) => !current)}
         aria-label="Notifications"
       >
+        <span role="img" aria-hidden="true">Bell</span>
         <span>Notifications</span>
         {unreadCount > 0 ? <span className="notif-badge">{unreadCount}</span> : null}
       </button>

@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import authService from '../services/auth';
-import { AUTH_CLEARED_EVENT, AUTH_STORAGE_KEY } from '../services/api';
+import { AUTH_CLEARED_EVENT, clearStoredAuth, getStoredAuth, setStoredAuth } from '../services/api';
 
 const AuthContext = createContext();
 
@@ -8,15 +8,17 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     let ignore = false;
 
     const syncStoredSession = async () => {
-      const stored = window.localStorage.getItem(AUTH_STORAGE_KEY);
+      const stored = getStoredAuth();
 
       if (!stored) {
         if (!ignore) {
+          setHydrated(true);
           setLoading(false);
         }
         return;
@@ -26,7 +28,7 @@ export function AuthProvider({ children }) {
         const parsed = JSON.parse(stored);
 
         if (!parsed.token) {
-          window.localStorage.removeItem(AUTH_STORAGE_KEY);
+          clearStoredAuth();
           if (!ignore) {
             setLoading(false);
           }
@@ -44,13 +46,14 @@ export function AuthProvider({ children }) {
           setToken(parsed.token);
         }
       } catch (error) {
-        window.localStorage.removeItem(AUTH_STORAGE_KEY);
+        clearStoredAuth();
         if (!ignore) {
           setUser(null);
           setToken(null);
         }
       } finally {
         if (!ignore) {
+          setHydrated(true);
           setLoading(false);
         }
       }
@@ -60,6 +63,7 @@ export function AuthProvider({ children }) {
       if (!ignore) {
         setUser(null);
         setToken(null);
+        setHydrated(true);
         setLoading(false);
       }
     };
@@ -74,15 +78,20 @@ export function AuthProvider({ children }) {
   }, []);
 
   useEffect(() => {
-    if (user && token) {
-      window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ user, token }));
-    } else {
-      window.localStorage.removeItem(AUTH_STORAGE_KEY);
+    if (!hydrated) {
+      return;
     }
-  }, [token, user]);
+
+    if (user && token) {
+      setStoredAuth({ user, token });
+    } else {
+      setStoredAuth(null);
+    }
+  }, [hydrated, token, user]);
 
   const login = async ({ email, password, role }) => {
     const response = await authService.login(email, password, role);
+    setStoredAuth({ user: response.user, token: response.token });
     setUser(response.user);
     setToken(response.token);
     return response;
@@ -90,6 +99,7 @@ export function AuthProvider({ children }) {
 
   const register = async (payload) => {
     const response = await authService.register(payload);
+    setStoredAuth({ user: response.user, token: response.token });
     setUser(response.user);
     setToken(response.token);
     return response;
@@ -99,6 +109,7 @@ export function AuthProvider({ children }) {
     await authService.logout();
     setUser(null);
     setToken(null);
+    setStoredAuth(null);
   };
 
   const value = useMemo(() => ({

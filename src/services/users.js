@@ -12,9 +12,12 @@ export const normalizeUserProfile = (profile, fallbackUser = null) => {
     email: profile?.email || fallbackUser?.email || '',
     role: profile?.role || fallbackUser?.role || '',
     linkedChildId: resolvedId,
+    childId: profile?.childId || resolvedId,
     linkedChildName: resolvedName,
     parentName: profile?.parentName || '',
-    teacherName: profile?.teacherName || ''
+    teacherName: profile?.teacherName || '',
+    linkedParentId: profile?.linkedParentId || fallbackUser?.linkedParentId || '',
+    linkedTeacherId: profile?.linkedTeacherId || fallbackUser?.linkedTeacherId || ''
   };
 };
 

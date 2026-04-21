@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import NotifBell from './NotifBell';
 
@@ -17,6 +17,7 @@ function AppShell({
 }) {
   const { logout } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => window.innerWidth < 768);
   const [internalActiveNavIndex, setInternalActiveNavIndex] = useState(0);
   const activeNavIndex = Number.isInteger(controlledActiveNavIndex)
     ? controlledActiveNavIndex
@@ -26,6 +27,19 @@ function AppShell({
   const normalizedNavItems = navItems.map((item) => (typeof item === 'string' ? { label: item } : item));
   const hasSummary = summary?.title || summary?.body || summary?.highlights?.length;
 
+  useEffect(() => {
+    const onResize = () => {
+      const shouldCollapse = window.innerWidth < 768;
+      setCollapsed(shouldCollapse);
+      if (!shouldCollapse) {
+        setSidebarOpen(false);
+      }
+    };
+
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
   return (
     <div className={`role-page role-${roleLabel.toLowerCase()}`}>
       <div
@@ -34,7 +48,7 @@ function AppShell({
         aria-hidden={!sidebarOpen}
       />
 
-      <aside className={`role-sidebar ${sidebarOpen ? 'open' : ''}`}>
+      <aside className={`role-sidebar ${sidebarOpen ? 'open' : ''} ${collapsed ? 'sidebar-collapsed' : ''}`}>
         <div className="sidebar-scroll">
           <div className="sidebar-head">
             <div className="brand">
@@ -51,6 +65,14 @@ function AppShell({
               aria-label="Close navigation"
             >
               Close
+            </button>
+            <button
+              type="button"
+              className="sidebar-collapse-toggle"
+              onClick={() => setCollapsed((value) => !value)}
+              aria-label={collapsed ? 'Expand navigation' : 'Collapse navigation'}
+            >
+              {collapsed ? '>' : '<'}
             </button>
           </div>
 
@@ -136,9 +158,10 @@ function AppShell({
 
         {children}
 
-        <footer className="coming-soon-footer" aria-label="Coming soon feature notice">
-          <span className="coming-soon-badge">Coming Soon</span>
-          <strong>Live Calling &amp; Screen Monitoring</strong>
+        <footer className="app-footer" aria-label="Coming soon feature notice">
+          <div className="coming-soon-banner">
+            <strong>Coming Soon:</strong> Live Video Calling &amp; Screen Monitoring
+          </div>
         </footer>
       </main>
     </div>

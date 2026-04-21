@@ -1,10 +1,52 @@
 import React, { useEffect, useState } from 'react';
 import AppShell from '../../components/AppShell';
 import { useAuth } from '../../context/AuthContext';
-import dashboardService from '../../services/dashboard';
-import connectionsService from '../../services/connections';
+import connectionsService, { getConnectionErrorMessage, isIncomingRequestForUser } from '../../services/connections';
 import meetingsService from '../../services/meetings';
 import usersService, { normalizeUserProfile } from '../../services/users';
+import { getTasks, updateStatus } from '../../services/tasks';
+import { getNotes } from '../../services/notes';
+import eventsService from '../../services/events';
+
+const formatEventTimeRange = (event) => {
+  const start = event?.scheduledAt || event?.when;
+  const end = event?.endAt;
+  if (!start) {
+    return 'Upcoming event';
+  }
+  const startDate = new Date(start);
+  if (Number.isNaN(startDate.getTime())) {
+    return start;
+  }
+  const datePart = startDate.toLocaleDateString();
+  const startPart = startDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (!end) {
+    return `${datePart}, ${startPart}`;
+  }
+  const endDate = new Date(end);
+  if (Number.isNaN(endDate.getTime())) {
+    return `${datePart}, ${startPart}`;
+  }
+  return `${datePart}, ${startPart} - ${endDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+};
+
+const toExternalHref = (url) => {
+  const value = String(url || '').trim();
+  if (!value) {
+    return '';
+  }
+  if (/^(https?:)?\/\//i.test(value)) {
+    return value.startsWith('//') ? `https:${value}` : value;
+  }
+  return `https://${value}`;
+};
+
+const openExternalLink = (url) => {
+  const href = toExternalHref(url);
+  if (href) {
+    window.open(href, '_blank', 'noopener,noreferrer');
+  }
+};
 
 function ChildDashboard() {
   const { user } = useAuth();
@@ -30,26 +72,37 @@ function ChildDashboard() {
   const [friendSubmitting, setFriendSubmitting] = useState(false);
   const [savingTaskId, setSavingTaskId] = useState('');
   const REFRESH_INTERVAL_MS = 30000;
+  const isTodoStatus = (status) => status === 'Pending' || status === 'In Progress';
+  const isDoneStatus = (status) => status === 'Completed';
 
   useEffect(() => {
+    if (!user || user.role !== 'CHILD') {
+      return undefined;
+    }
+
     let ignore = false;
 
-    const loadDashboard = async () => {
+    const loadDashboard = async (profileData = null) => {
       try {
-        const [summaryData, tasksData, notesData, notesListData, eventsData] = await Promise.all([
-          dashboardService.getChildSummary(),
-          dashboardService.getChildTasks(),
-          dashboardService.getChildNotes(),
-          dashboardService.getChildNotesDetailed().catch(() => []),
-          dashboardService.getChildEvents()
+        const resolvedProfile = profileData || await usersService.getProfile().catch(() => null);
+        const normalizedProfile = normalizeUserProfile(resolvedProfile, user);
+        const childId = normalizedProfile.childId || normalizedProfile.linkedChildId || normalizedProfile.id;
+        const teacherId = normalizedProfile.linkedTeacherId || '';
+        const [tasksData, notesListData, eventsData] = await Promise.all([
+          getTasks(childId).catch(() => []),
+          getNotes(childId).catch(() => []),
+          eventsService.getEvents(teacherId).catch(() => [])
         ]);
 
         if (!ignore) {
-          setSummary(summaryData);
-          setChildTasks(tasksData);
-          setSubjectFolders(notesData);
+          setProfile(resolvedProfile || null);
+          setSummary({
+            message: tasksData.length === 0 ? 'No tasks assigned right now' : `${tasksData.length} task(s) ready`
+          });
+          setChildTasks(Array.isArray(tasksData) ? tasksData : []);
+          setSubjectFolders(Array.isArray(notesListData) ? notesListData : []);
           setSubjectNotes(Array.isArray(notesListData) ? notesListData : []);
-          setChildEvents(eventsData);
+          setChildEvents(Array.isArray(eventsData) ? eventsData : []);
         }
       } catch (error) {
         console.error('Error loading child dashboard:', error);
@@ -85,6 +138,7 @@ function ChildDashboard() {
           setAppointmentMeetings(Array.isArray(meetingData) ? meetingData : []);
           setProfile(profileData || null);
         }
+        await loadDashboard(profileData);
       } catch (error) {
         if (!ignore) {
           setAppointmentMeetings([]);
@@ -100,13 +154,15 @@ function ChildDashboard() {
       ignore = true;
       clearInterval(intervalId);
     };
-  }, []);
+  }, [user]);
 
-  const pendingTasks = childTasks.filter((task) => task.status === 'Pending').length;
-  const revisionTasks = childTasks.filter((task) => task.status === 'Needs Revision').length;
-  const completedTasks = childTasks.filter((task) => task.status === 'Completed').length;
-  const incomingFriendRequests = friendRequests.filter((request) => !request.status || request.status === 'PENDING');
+  const pendingTasks = childTasks.filter((task) => isTodoStatus(task.status)).length;
+  const completedTasks = childTasks.filter((task) => isDoneStatus(task.status)).length;
   const childProfile = normalizeUserProfile(profile, user);
+  const currentUserId = childProfile.id || user?.id;
+  const incomingFriendRequests = friendRequests.filter((request) => isIncomingRequestForUser(request, currentUserId));
+  const toDoTasks = childTasks.filter((task) => isTodoStatus(task.status));
+  const doneTasks = childTasks.filter((task) => isDoneStatus(task.status));
 
   const handleSendFriendRequest = async (event) => {
     event.preventDefault();
@@ -134,7 +190,7 @@ function ChildDashboard() {
       setShowRolePopup(false);
       setShowFriendForm(false);
     } catch (error) {
-      setFriendFormError(error.response?.data?.message || 'Unable to send friend request.');
+      setFriendFormError(getConnectionErrorMessage(error, 'Unable to send friend request.'));
     } finally {
       setFriendSubmitting(false);
     }
@@ -152,7 +208,7 @@ function ChildDashboard() {
       setFriendSearchResults(Array.isArray(users) ? users : []);
     } catch (error) {
       setFriendSearchResults([]);
-      setFriendFormError(error.response?.data?.message || 'Unable to search users.');
+      setFriendFormError(getConnectionErrorMessage(error, 'Unable to search users.'));
     } finally {
       setFriendSearchLoading(false);
     }
@@ -161,6 +217,9 @@ function ChildDashboard() {
   const openRolePopupForUser = (user) => {
     setSelectedUser(user);
     setFriendForm((current) => ({ ...current, receiverId: user.id }));
+    if (['PARENT', 'TEACHER'].includes(user.role)) {
+      setSelectedRelationshipRole(user.role);
+    }
     setShowRolePopup(true);
     setFriendFormError('');
   };
@@ -176,14 +235,14 @@ function ChildDashboard() {
       }
       setFriendRequests((current) => current.filter((request) => request.id !== requestId));
     } catch (error) {
-      console.error('Unable to update friend request', error);
+      setFriendFormError(getConnectionErrorMessage(error, 'Unable to update friend request.'));
     }
   };
 
   const handleTaskStatusChange = async (taskId, status) => {
     try {
       setSavingTaskId(taskId);
-      const updated = await dashboardService.updateChildTaskStatus(taskId, status);
+      const updated = await updateStatus(taskId, status);
       setChildTasks((current) => current.map((task) => (task.id === taskId ? updated : task)));
     } catch (error) {
       console.error('Unable to update task status', error);
@@ -202,25 +261,24 @@ function ChildDashboard() {
         { label: 'Tasks', meta: `${childTasks.length} total` },
         { label: 'Notes', meta: `${subjectFolders.length} subjects` },
         { label: 'Events', meta: `${childEvents.length} coming` },
-        { label: 'Appointments', meta: `${appointmentMeetings.length} confirmed` },
         { label: 'Requests', meta: `${incomingFriendRequests.length} pending` }
       ]}
       summary={{
         title: summary?.message || 'Small steps, clear wins',
         body: pendingTasks > 0 
-          ? `You have ${pendingTasks} task(s) to finish. ${revisionTasks} task(s) need your review based on teacher feedback.`
+          ? `You have ${pendingTasks} task(s) to finish. Keep going one by one.`
           : `Great job! You've completed ${completedTasks} tasks. Keep it up!`,
         highlights: [
           `${pendingTasks} tasks due`,
-          `${revisionTasks} need edits`,
+          `${completedTasks} completed`,
           `${childEvents.length} events this week`
         ]
       }}
       topbarMeta={[
         { label: 'To do', value: `${pendingTasks}`, helper: 'Do these first' },
-        { label: 'Needs fixes', value: `${revisionTasks}`, helper: 'Teacher feedback ready' },
         { label: 'Done', value: `${completedTasks}`, helper: 'Great job!' }
       ]}
+      showNotificationButton={false}
       actionSlot={(
         <>
           <button type="button" className="ghost-btn" onClick={() => setShowProfile((open) => !open)}>
@@ -232,7 +290,7 @@ function ChildDashboard() {
         </>
       )}
     >
-      {showProfile ? (
+        {showProfile ? (
         <section className="panel inline-form-panel">
           <div className="panel-head">
             <h3>Profile</h3>
@@ -243,10 +301,10 @@ function ChildDashboard() {
               <span>User ID: {childProfile.id || 'N/A'}</span>
               <small>Username: {childProfile.username || 'N/A'}</small>
               <small>Role: {childProfile.role || 'N/A'}</small>
-              <span>Child ID: {childProfile.linkedChildId || 'N/A'}</span>
+              <span>Child ID: {childProfile.childId || 'N/A'}</span>
               <small>Email: {childProfile.email || 'N/A'}</small>
-              <small>Parent Name: {childProfile.parentName || 'N/A'}</small>
-              <small>Teacher Name: {childProfile.teacherName || 'N/A'}</small>
+              <small>Parent Name: {childProfile.parentName || 'Not linked yet'}</small>
+              <small>Teacher Name: {childProfile.teacherName || 'Not linked yet'}</small>
             </div>
           </div>
         </section>
@@ -306,7 +364,7 @@ function ChildDashboard() {
             <p>How should you connect with {selectedUser.name}?</p>
           </div>
           <div className="switcher-row">
-            {['TEACHER', 'PARENT', 'CHILD'].map((role) => (
+            {['PARENT', 'TEACHER'].map((role) => (
               <button
                 key={role}
                 type="button"
@@ -330,13 +388,13 @@ function ChildDashboard() {
                 : `You have ${pendingTasks} thing${pendingTasks !== 1 ? 's' : ''} to finish.`}
             </h3>
             <p>
-              {pendingTasks > 0 || revisionTasks > 0
-                ? 'Start with the pending tasks, then check teacher feedback on any task that needs your attention. Take it one at a time!'
+              {pendingTasks > 0
+                ? 'Start with the pending tasks, then mark them complete when you finish. Take it one at a time!'
                 : 'Check back later for new assignments and upcoming events.'}
             </p>
             <div className="hero-badges child-badges">
               <span>{pendingTasks} to complete</span>
-              <span>{revisionTasks}  need edits</span>
+              <span>{completedTasks} completed</span>
               <span>{childEvents.length} events coming</span>
             </div>
           </div>
@@ -394,36 +452,48 @@ function ChildDashboard() {
 
         <article className="panel">
           <div className="panel-head">
-            <h3>Today&apos;s tasks</h3>
+            <h3>Task board</h3>
           </div>
           <div className="task-card-grid">
-            {childTasks.map((task) => (
-              <div key={task.id} className="task-card">
-                <div className="row-between">
-                  <span className="subject-pill">{task.subject}</span>
-                  <span className={`status-tag ${task.status.toLowerCase().replace(/\s+/g, '-')}`}>
-                    {task.status}
-                  </span>
+            {[
+              { title: 'To Do', items: toDoTasks },
+              { title: 'Done', items: doneTasks }
+            ].map((column) => (
+              <div key={column.title} className="stack-list">
+                <div className="panel-head">
+                  <h3>{column.title}</h3>
                 </div>
-                <h4>{task.title}</h4>
-                <p>Due {task.dueDate}</p>
-                <div className="row-between action-row">
-                  <select
-                    value={task.status === 'Completed' ? 'COMPLETED' : 'IN_PROGRESS'}
-                    onChange={(event) => handleTaskStatusChange(task.id, event.target.value)}
-                    disabled={savingTaskId === task.id}
-                  >
-                    <option value="IN_PROGRESS">In Progress</option>
-                    <option value="COMPLETED">Completed</option>
-                  </select>
-                </div>
-                {task.driveLink ? (
-                  <a href={task.driveLink} target="_blank" rel="noopener noreferrer">Open task note</a>
-                ) : null}
-                {task.feedback ? <div className="feedback-box">{task.feedback}</div> : null}
+                {column.items.map((task) => (
+                  <div key={task.id} className="task-card">
+                    <div className="row-between">
+                      <span className="subject-pill">{task.subject}</span>
+                      <span className={`status-tag ${String(task.status).toLowerCase().replace(/\s+/g, '-')}`}>
+                        {task.status}
+                      </span>
+                    </div>
+                    <h4>{task.title}</h4>
+                    <p>Due {task.dueDate}</p>
+                    {task.driveLink ? (
+                      <a href={task.driveLink} target="_blank" rel="noopener noreferrer">Open task note</a>
+                    ) : null}
+                    {task.feedback ? <div className="feedback-box">{task.feedback}</div> : null}
+                    {column.title !== 'Done' ? (
+                      <div className="row-between action-row">
+                        <button
+                          type="button"
+                          className="primary-btn"
+                          onClick={() => handleTaskStatusChange(task.id, 'COMPLETED')}
+                          disabled={savingTaskId === task.id}
+                        >
+                          {savingTaskId === task.id ? 'Saving...' : 'Mark Complete'}
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+                {column.items.length === 0 ? <p style={{ padding: '1rem', color: '#666' }}>Nothing here yet</p> : null}
               </div>
             ))}
-            {childTasks.length === 0 && <p style={{ padding: '1rem', color: '#666' }}>No tasks assigned yet</p>}
           </div>
         </article>
 
@@ -434,8 +504,13 @@ function ChildDashboard() {
           <div className="stack-list">
             {subjectNotes.map((note) => (
               <div key={note.id} className="info-card">
-                <strong>{note.subject} | {note.title}</strong>
-                <a href={note.driveLink} target="_blank" rel="noopener noreferrer">Open / Download from Drive</a>
+                <strong>{note.title || 'Subject note'}</strong>
+                <span>{note.subject || 'General'}</span>
+                {note.driveLink ? (
+                  <button type="button" className="ghost-btn note-view-btn" onClick={() => openExternalLink(note.driveLink)}>
+                    View Note
+                  </button>
+                ) : null}
               </div>
             ))}
             {subjectNotes.length === 0 && subjectFolders.map((folder) => (
@@ -473,7 +548,8 @@ function ChildDashboard() {
             {childEvents.map((event) => (
               <div key={event.id} className="info-card">
                 <strong>{event.title}</strong>
-                <small>{event.when}</small>
+                <small>{formatEventTimeRange(event)}</small>
+                {event.detail ? <span>{event.detail}</span> : null}
               </div>
             ))}
             {childEvents.length === 0 && <p style={{ padding: '1rem', color: '#666' }}>No events scheduled</p>}

@@ -751,12 +751,14 @@ h4,
 
 .shell-backdrop,
 .sidebar-toggle,
-.sidebar-close {
+.sidebar-close,
+.sidebar-collapse-toggle {
   display: none;
 }
 
 .sidebar-toggle,
-.sidebar-close {
+.sidebar-close,
+.sidebar-collapse-toggle {
   border: 1px solid var(--line);
   border-radius: 999px;
   padding: 0.65rem 0.95rem;
@@ -834,6 +836,19 @@ h4,
   transform: translateY(-2px);
   border-color: rgba(33, 86, 216, 0.22);
   box-shadow: 0 22px 36px rgba(15, 23, 42, 0.1);
+}
+
+.note-view-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  margin-top: 0.65rem;
+  padding: 0.5rem 0.85rem;
+  color: #fff;
+  background: var(--primary);
+  border-color: transparent;
+  box-shadow: 0 12px 24px rgba(33, 86, 216, 0.2);
 }
 
 .metric-grid {
@@ -1054,6 +1069,101 @@ h4,
   background: #dff7ea;
 }
 
+.status-tag.in-progress {
+  color: #0f766e;
+  background: #d9f8f1;
+}
+
+.status-tag.completed,
+.status-tag.accepted {
+  color: #136b43;
+  background: #dff7ea;
+}
+
+.status-tag.declined {
+  color: #9b1c1c;
+  background: #ffe4e6;
+}
+
+.task-timeline-card {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.task-timeline {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  padding-top: 0.25rem;
+}
+
+.task-timeline-step {
+  position: relative;
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+  padding-top: 1.15rem;
+  color: var(--muted);
+}
+
+.task-timeline-step::before {
+  content: "";
+  position: absolute;
+  top: 0.34rem;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: #dbe5ef;
+}
+
+.task-timeline-step.active::before,
+.task-timeline.complete .task-timeline-step::before {
+  background: linear-gradient(90deg, var(--parent), #65d5c7);
+}
+
+.task-timeline-step:last-child::before {
+  right: 50%;
+}
+
+.task-timeline-step:first-child::before {
+  left: 50%;
+}
+
+.task-timeline-dot {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  transform: translateX(-50%);
+  background: #dbe5ef;
+  border: 3px solid #fff;
+  box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.3);
+  z-index: 1;
+}
+
+.task-timeline-step.active .task-timeline-dot,
+.task-timeline.complete .task-timeline-dot {
+  background: var(--parent);
+  box-shadow: 0 0 0 3px rgba(13, 143, 131, 0.16);
+}
+
+.task-timeline-step strong,
+.task-timeline-step small {
+  display: block;
+  text-align: center;
+}
+
+.task-timeline-step strong {
+  color: var(--text);
+  font-size: 0.78rem;
+}
+
+.task-timeline-step small {
+  font-size: 0.74rem;
+}
+
 .parent-top-row {
   grid-template-columns: 1.4fr 1fr;
   margin-bottom: 1rem;
@@ -1112,6 +1222,28 @@ h4,
 
 .coming-soon-footer .coming-soon-badge {
   margin-bottom: 0;
+}
+
+.app-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+  margin-top: 1rem;
+}
+
+.coming-soon-banner {
+  background: #1e293b;
+  color: #94a3b8;
+  text-align: center;
+  padding: 0.5rem 1rem;
+  font-size: 0.81rem;
+  letter-spacing: 0.02em;
+  border-radius: 16px;
+  box-shadow: var(--shadow-soft);
+}
+
+.coming-soon-banner strong {
+  color: #e2e8f0;
 }
 
 .bar-chart {
@@ -1351,7 +1483,8 @@ h4,
   }
 
   .sidebar-toggle,
-  .sidebar-close {
+  .sidebar-close,
+  .sidebar-collapse-toggle {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1440,6 +1573,47 @@ h4,
 
   .side-nav-item {
     padding: 0.9rem;
+  }
+}
+
+@media (min-width: 769px) {
+  .sidebar-collapse-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .role-page {
+    grid-template-columns: minmax(64px, 280px) minmax(0, 1fr);
+  }
+
+  .role-sidebar {
+    width: 280px;
+    transition: width 0.25s ease;
+  }
+
+  .role-sidebar.sidebar-collapsed {
+    width: 64px;
+    padding-left: 0.65rem;
+    padding-right: 0.65rem;
+  }
+
+  .role-sidebar.sidebar-collapsed .brand div,
+  .role-sidebar.sidebar-collapsed .side-nav-copy,
+  .role-sidebar.sidebar-collapsed .nav-badge,
+  .role-sidebar.sidebar-collapsed .sidebar-summary,
+  .role-sidebar.sidebar-collapsed .sidebar-close {
+    display: none;
+  }
+
+  .role-sidebar.sidebar-collapsed .side-nav-item {
+    justify-content: center;
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+  }
+
+  .role-sidebar.sidebar-collapsed .side-nav-index {
+    min-width: 0;
   }
 }
 

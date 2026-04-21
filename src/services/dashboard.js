@@ -87,13 +87,14 @@ export const dashboardService = {
   },
   getTeacherStudents: async () => (await api.get('/teacher/students')).data,
   getTeacherTasks: async () => {
-    const data = (await api.get('/teacher/tasks')).data;
+    const data = (await api.get('/tasks', { params: { role: 'teacher' } })).data;
 
     return data.map((task) => ({
       ...task,
       dueDate: formatDateLabel(task.dueDate),
       priority: formatPriorityLabel(task.priority),
-      status: formatStatusLabel(task.status)
+      status: formatStatusLabel(task.status),
+      completedAt: task.completedAt ? formatDateTimeLabel(task.completedAt) : ''
     }));
   },
   getTeacherMeetings: async () => {
@@ -206,20 +207,24 @@ export const dashboardService = {
 
   // Task management methods
   createTask: async (taskData) => {
-    const response = await api.post('/teacher/tasks', {
+    const payload = {
       title: taskData.title,
       subject: taskData.subject,
-      audience: taskData.audience, // Child ID
       dueDate: taskData.dueDate,
       priority: taskData.priority,
-      detail: taskData.detail,
-      driveLink: taskData.driveLink || null
-    });
+      detail: taskData.detail
+    };
+
+    if (taskData.audience) {
+      payload.audience = taskData.audience;
+    }
+
+    const response = await api.post('/tasks', payload);
     return response.data;
   },
 
   updateTask: async (taskId, taskUpdate) => {
-    const response = await api.put(`/teacher/tasks/${taskId}`, {
+    const response = await api.put(`/tasks/${taskId}`, {
       ...taskUpdate,
       status: taskUpdate.status || 'PENDING'
     });

@@ -5,8 +5,73 @@ import { useAuth } from '../../context/AuthContext';
 import dashboardService from '../../services/dashboard';
 import notificationsService from '../../services/notifications';
 import meetingsService from '../../services/meetings';
-import connectionsService from '../../services/connections';
+import connectionsService, { getConnectionErrorMessage, isIncomingRequestForUser } from '../../services/connections';
 import usersService, { normalizeUserProfile } from '../../services/users';
+import { getTasks } from '../../services/tasks';
+import eventsService from '../../services/events';
+
+const REFRESH_INTERVAL_MS = 5000;
+
+const isCompletedStatus = (status) => String(status).toLowerCase() === 'completed';
+
+const getMeetingStatus = (meeting) => String(meeting?.status || 'PENDING').toUpperCase();
+
+const getMeetingTime = (meeting) => {
+  const rawDate = meeting?.confirmedDatetime || meeting?.scheduledAt || meeting?.requestedAt;
+  if (!rawDate) {
+    return 'Time not set';
+  }
+
+  const date = new Date(rawDate);
+  if (Number.isNaN(date.getTime())) {
+    return rawDate;
+  }
+
+  return date.toLocaleString();
+};
+
+const formatEventTimeRange = (event) => {
+  const start = event?.scheduledAt || event?.time;
+  const end = event?.endAt;
+  if (!start) {
+    return 'Upcoming event';
+  }
+  const startDate = new Date(start);
+  if (Number.isNaN(startDate.getTime())) {
+    return start;
+  }
+  const datePart = startDate.toLocaleDateString();
+  const startPart = startDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (!end) {
+    return `${datePart}, ${startPart}`;
+  }
+  const endDate = new Date(end);
+  if (Number.isNaN(endDate.getTime())) {
+    return `${datePart}, ${startPart}`;
+  }
+  return `${datePart}, ${startPart} - ${endDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+};
+
+function TaskTimeline({ task }) {
+  const completed = isCompletedStatus(task.status);
+  const checkpoints = [
+    { label: 'Assigned', date: task.assignedAt || 'Assigned', complete: true },
+    { label: 'Due', date: task.dueDate || 'Not set', complete: true },
+    { label: 'Completed', date: task.completedAt || 'Waiting', complete: completed }
+  ];
+
+  return (
+    <div className={`task-timeline ${completed ? 'complete' : ''}`}>
+      {checkpoints.map((checkpoint) => (
+        <div key={checkpoint.label} className={`task-timeline-step ${checkpoint.complete ? 'active' : ''}`}>
+          <span className="task-timeline-dot" />
+          <strong>{checkpoint.label}</strong>
+          <small>{checkpoint.date}</small>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function ParentDashboard() {
   const { user } = useAuth();
@@ -17,6 +82,7 @@ function ParentDashboard() {
   const [parentActivity, setParentActivity] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [appointmentMeetings, setAppointmentMeetings] = useState([]);
+  const [parentEvents, setParentEvents] = useState([]);
   const [friendRequests, setFriendRequests] = useState([]);
   const [connections, setConnections] = useState([]);
   const [showMeetingForm, setShowMeetingForm] = useState(false);
@@ -25,25 +91,37 @@ function ParentDashboard() {
   const [profile, setProfile] = useState(null);
   const [meetingForm, setMeetingForm] = useState({ title: '', requestedAt: '', detail: '' });
   const [connectionForm, setConnectionForm] = useState({ username: '', message: '' });
+  const [connectionSearchResults, setConnectionSearchResults] = useState([]);
+  const [connectionSearchLoading, setConnectionSearchLoading] = useState(false);
+  const [selectedConnectionUser, setSelectedConnectionUser] = useState(null);
+  const [showConnectionRolePicker, setShowConnectionRolePicker] = useState(false);
+  const [selectedConnectionRole, setSelectedConnectionRole] = useState('TEACHER');
   const [meetingFormError, setMeetingFormError] = useState('');
   const [connectionFormError, setConnectionFormError] = useState('');
   const [meetingSubmitting, setMeetingSubmitting] = useState(false);
   const [connectionSubmitting, setConnectionSubmitting] = useState(false);
 
   useEffect(() => {
+    if (!user || user.role !== 'PARENT') {
+      return undefined;
+    }
+
     let ignore = false;
 
-    const loadDashboard = async () => {
-      if (!activeChild?.id) {
+    const loadDashboard = async (profileData = null) => {
+      const normalizedProfile = normalizeUserProfile(profileData || profile, user);
+      const childId = activeChild?.id || normalizedProfile.linkedChildId;
+      if (!childId) {
         return;
       }
 
       try {
-        const [summaryData, performanceData, tasksData, activityData] = await Promise.all([
-          dashboardService.getParentSummary(activeChild.id),
-          dashboardService.getParentPerformance(activeChild.id),
-          dashboardService.getParentTasks(activeChild.id),
-          dashboardService.getParentActivity(activeChild.id)
+        const [summaryData, performanceData, tasksData, activityData, eventsData] = await Promise.all([
+          dashboardService.getParentSummary(childId),
+          dashboardService.getParentPerformance(childId),
+          getTasks(childId),
+          dashboardService.getParentActivity(childId),
+          eventsService.getEvents(normalizedProfile.linkedTeacherId).catch(() => [])
         ]);
 
         if (!ignore) {
@@ -51,6 +129,7 @@ function ParentDashboard() {
           setPerformanceDays(performanceData);
           setParentTasks(tasksData);
           setParentActivity(activityData);
+          setParentEvents(Array.isArray(eventsData) ? eventsData : []);
         }
       } catch (error) {
         console.error('Error loading parent dashboard:', error);
@@ -59,19 +138,26 @@ function ParentDashboard() {
           setPerformanceDays([]);
           setParentTasks([]);
           setParentActivity([]);
+          setParentEvents([]);
         }
       }
     };
 
     loadDashboard();
+    const intervalId = setInterval(loadDashboard, REFRESH_INTERVAL_MS);
 
     return () => {
       ignore = true;
+      clearInterval(intervalId);
     };
-  }, [activeChild]);
+  }, [activeChild, profile, user]);
 
   // Subscribe to notifications
   useEffect(() => {
+    if (!user || user.role !== 'PARENT') {
+      return undefined;
+    }
+
     const unsubscribe = notificationsService.subscribe((notifs) => {
       setNotifications(notifs);
     });
@@ -79,13 +165,17 @@ function ParentDashboard() {
     return () => {
       unsubscribe();
     };
-  }, []);
+  }, [user]);
 
   useEffect(() => {
+    if (!user || user.role !== 'PARENT') {
+      return undefined;
+    }
+
     let ignore = false;
     const loadAppointments = async () => {
       try {
-        const accepted = await meetingsService.getMeetingRequests('ACCEPTED');
+        const accepted = await meetingsService.getMeetingsAsParent();
         if (!ignore) {
           setAppointmentMeetings(Array.isArray(accepted) ? accepted : []);
         }
@@ -97,6 +187,7 @@ function ParentDashboard() {
     };
 
     loadAppointments();
+    const appointmentIntervalId = setInterval(loadAppointments, REFRESH_INTERVAL_MS);
     connectionsService.getFriendRequests().then((data) => {
       if (!ignore) {
         setFriendRequests(Array.isArray(data) ? data : []);
@@ -126,23 +217,28 @@ function ParentDashboard() {
     });
     return () => {
       ignore = true;
+      clearInterval(appointmentIntervalId);
     };
-  }, []);
+  }, [user]);
 
   const currentChild = summary || activeChild;
   const unreadCount = notifications.filter((n) => !n.read).length;
-  const completedTasks = parentTasks.filter((t) => t.status === 'Completed').length;
-  const incomingFriendRequests = friendRequests.filter((request) => !request.status || request.status === 'PENDING');
+  const completedTasks = parentTasks.filter((t) => isCompletedStatus(t.status)).length;
+  const pendingMeetingCount = appointmentMeetings.filter((meeting) => getMeetingStatus(meeting) === 'PENDING').length;
+  const acceptedMeetingCount = appointmentMeetings.filter((meeting) => getMeetingStatus(meeting) === 'ACCEPTED').length;
   const parentProfile = {
     ...normalizeUserProfile(profile, user),
     linkedChildId: profile?.linkedChildId || user?.linkedChildId || activeChild?.id || '',
     linkedChildName: profile?.linkedChildName || activeChild?.name || ''
   };
+  const currentUserId = parentProfile.id || user?.id;
+  const incomingFriendRequests = friendRequests.filter((request) => isIncomingRequestForUser(request, currentUserId));
 
   const handleMeetingRequest = async (event) => {
     event.preventDefault();
     setMeetingFormError('');
-    if (!activeChild?.id) {
+    const linkedChildId = parentProfile.linkedChildId || activeChild?.childId || activeChild?.id;
+    if (!linkedChildId) {
       setMeetingFormError('Please select a child first.');
       return;
     }
@@ -153,14 +249,16 @@ function ParentDashboard() {
 
     setMeetingSubmitting(true);
     try {
-      await meetingsService.createMeetingRequest({
-        childId: activeChild.id,
+      await meetingsService.requestMeeting({
+        childId: linkedChildId,
         title: meetingForm.title.trim(),
-        requestedAt: meetingForm.requestedAt,
-        detail: meetingForm.detail.trim()
+        preferredDatetime: meetingForm.requestedAt,
+        reason: meetingForm.detail.trim()
       });
       setMeetingForm({ title: '', requestedAt: '', detail: '' });
       setShowMeetingForm(false);
+      const latestMeetings = await meetingsService.getMeetingsAsParent().catch(() => []);
+      setAppointmentMeetings(Array.isArray(latestMeetings) ? latestMeetings : []);
     } catch (error) {
       setMeetingFormError(error.response?.data?.message || 'Unable to send meeting request.');
     } finally {
@@ -171,28 +269,64 @@ function ParentDashboard() {
   const handleSendConnectionRequest = async (event) => {
     event.preventDefault();
     setConnectionFormError('');
-    if (!connectionForm.username.trim()) {
-      setConnectionFormError('Username is required.');
+    if (!selectedConnectionUser?.id) {
+      setConnectionFormError('Select a user from search results first.');
       return;
     }
 
     setConnectionSubmitting(true);
     try {
       await connectionsService.sendFriendRequest({
-        receiverUsername: connectionForm.username.trim(),
+        receiverId: selectedConnectionUser.id,
+        receiverUsername: selectedConnectionUser.username,
+        receiverRoleType: selectedConnectionRole,
         message: connectionForm.message.trim(),
-        relationshipRole: 'PARENT',
         senderRoleType: user?.role || 'PARENT'
       });
       setConnectionForm({ username: '', message: '' });
+      setConnectionSearchResults([]);
+      setSelectedConnectionUser(null);
+      setSelectedConnectionRole('TEACHER');
+      setShowConnectionRolePicker(false);
       setShowConnectionForm(false);
       const latestRequests = await connectionsService.getFriendRequests();
       setFriendRequests(Array.isArray(latestRequests) ? latestRequests : []);
     } catch (error) {
-      setConnectionFormError(error.response?.data?.message || 'Unable to send connection request.');
+      setConnectionFormError(getConnectionErrorMessage(error, 'Unable to send connection request.'));
     } finally {
       setConnectionSubmitting(false);
     }
+  };
+
+  const handleConnectionSearch = async () => {
+    if (!connectionForm.username.trim()) {
+      setConnectionSearchResults([]);
+      setConnectionFormError('Enter a username or email to search.');
+      return;
+    }
+
+    setConnectionSearchLoading(true);
+    setConnectionFormError('');
+    try {
+      const results = await connectionsService.searchUsers(connectionForm.username.trim());
+      const filtered = (Array.isArray(results) ? results : []).filter((candidate) => ['TEACHER', 'CHILD'].includes(candidate.role));
+      setConnectionSearchResults(filtered);
+      if (!filtered.length) {
+        setConnectionFormError('No matching teacher or child account found.');
+      }
+    } catch (error) {
+      setConnectionSearchResults([]);
+      setConnectionFormError(getConnectionErrorMessage(error, 'Unable to search users.'));
+    } finally {
+      setConnectionSearchLoading(false);
+    }
+  };
+
+  const openConnectionRolePicker = (selectedUser) => {
+    setSelectedConnectionUser(selectedUser);
+    setSelectedConnectionRole(['TEACHER', 'CHILD'].includes(selectedUser.role) ? selectedUser.role : 'TEACHER');
+    setShowConnectionRolePicker(true);
+    setConnectionFormError('');
   };
 
   const handleFriendRequestAction = async (requestId, action) => {
@@ -206,7 +340,7 @@ function ParentDashboard() {
       const linked = await connectionsService.getConnections();
       setConnections(Array.isArray(linked) ? linked : []);
     } catch (error) {
-      console.error('Unable to update friend request', error);
+      setConnectionFormError(getConnectionErrorMessage(error, 'Unable to update friend request.'));
     }
   };
 
@@ -218,9 +352,9 @@ function ParentDashboard() {
       navItems={[
         { label: 'Overview', meta: 'Family snapshot' },
         { label: 'Child Detail', meta: currentChild?.name || 'Choose child' },
-        { label: 'Meetings', meta: `${appointmentMeetings.length} appointments` },
-        { label: 'Notifications', meta: `${unreadCount} new` },
-        { label: 'Calling', meta: 'Locked', comingSoon: true }
+        { label: 'Meetings', meta: `${pendingMeetingCount} pending, ${acceptedMeetingCount} scheduled` },
+        { label: 'Events', meta: `${parentEvents.length} coming` },
+        { label: 'Notifications', meta: `${unreadCount} new` }
       ]}
       summary={{
         title: currentChild ? `${currentChild.name} is the current focus` : 'Family overview',
@@ -243,7 +377,7 @@ function ParentDashboard() {
             {showConnectionForm ? 'Close Connect Form' : 'Connect User'}
           </button>
           <button type="button" className="primary-btn" onClick={() => setShowMeetingForm((open) => !open)}>
-            {showMeetingForm ? 'Close Request Form' : 'Schedule Meeting'}
+            {showMeetingForm ? 'Close Request Form' : 'Request Meeting with Teacher'}
           </button>
         </>
       )}
@@ -271,18 +405,43 @@ function ParentDashboard() {
       {showConnectionForm ? (
         <section className="panel inline-form-panel">
           <div className="panel-head">
-            <h3>Connect by username</h3>
-            <p>Enter exact username (email) to send connection request.</p>
+            <h3>Connect user</h3>
+            <p>Search for a teacher or child, choose the role, then send a connection request.</p>
           </div>
           <form className="inline-form-grid" onSubmit={handleSendConnectionRequest}>
             <label>
-              <span>Username *</span>
-              <input value={connectionForm.username} onChange={(event) => setConnectionForm((f) => ({ ...f, username: event.target.value }))} />
+              <span>Search user by username/name *</span>
+              <div className="row-between action-row">
+                <input
+                  value={connectionForm.username}
+                  onChange={(event) => setConnectionForm((f) => ({ ...f, username: event.target.value }))}
+                  placeholder="Type username or email"
+                />
+                <button type="button" className="ghost-btn" onClick={handleConnectionSearch} disabled={connectionSearchLoading}>
+                  {connectionSearchLoading ? 'Searching...' : 'Search'}
+                </button>
+              </div>
+              {connectionSearchResults.length > 0 ? (
+                <div className="stack-list" style={{ marginTop: '0.6rem' }}>
+                  {connectionSearchResults.map((candidate) => (
+                    <button key={candidate.id} type="button" className="info-card search-result-btn" onClick={() => openConnectionRolePicker(candidate)}>
+                      <strong>{candidate.name}</strong>
+                      <span>{candidate.username}</span>
+                      <small>{candidate.role}</small>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </label>
             <label className="inline-form-span-two">
               <span>Message</span>
               <textarea value={connectionForm.message} onChange={(event) => setConnectionForm((f) => ({ ...f, message: event.target.value }))} rows={3} />
             </label>
+            {selectedConnectionUser ? (
+              <p className="inline-form-span-two" style={{ margin: 0, color: '#355' }}>
+                Selected: <strong>{selectedConnectionUser.name}</strong> ({selectedConnectionUser.username}) as <strong>{selectedConnectionRole}</strong>
+              </p>
+            ) : null}
             {connectionFormError ? <p className="form-error inline-form-error">{connectionFormError}</p> : null}
             <button type="submit" className="primary-btn" disabled={connectionSubmitting}>
               {connectionSubmitting ? 'Sending...' : 'Send Connection Request'}
@@ -291,10 +450,32 @@ function ParentDashboard() {
         </section>
       ) : null}
 
+      {showConnectionRolePicker && selectedConnectionUser ? (
+        <section className="panel inline-form-panel">
+          <div className="panel-head">
+            <h3>Select relationship role</h3>
+            <p>How should you connect with {selectedConnectionUser.name}?</p>
+          </div>
+          <div className="switcher-row">
+            {['TEACHER', 'CHILD'].map((role) => (
+              <button
+                key={role}
+                type="button"
+                className={`switcher-chip ${selectedConnectionRole === role ? 'active' : ''}`}
+                onClick={() => setSelectedConnectionRole(role)}
+              >
+                {role}
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       {showMeetingForm ? (
         <section className="panel inline-form-panel">
           <div className="panel-head">
             <h3>Request a meeting</h3>
+            <p>Send a preferred time to the teacher. The teacher reviews the request and confirms the scheduled meeting.</p>
           </div>
           <form className="inline-form-grid" onSubmit={handleMeetingRequest}>
             <label>
@@ -311,7 +492,7 @@ function ParentDashboard() {
             </label>
             {meetingFormError ? <p className="form-error inline-form-error">{meetingFormError}</p> : null}
             <button type="submit" className="primary-btn" disabled={meetingSubmitting}>
-              {meetingSubmitting ? 'Sending...' : 'Send Request to API'}
+              {meetingSubmitting ? 'Sending...' : 'Send Meeting Request'}
             </button>
           </form>
         </section>
@@ -414,21 +595,20 @@ function ParentDashboard() {
 
         <article className="panel">
           <div className="panel-head">
-            <h3>Task status</h3>
+            <h3>Task timeline</h3>
           </div>
           <div className="stack-list">
             {parentTasks.map((task) => (
-              <div key={task.id} className="info-card">
+              <div key={task.id} className="info-card task-timeline-card">
                 <div className="row-between">
                   <strong>{task.title}</strong>
-                  <span className={`status-tag ${task.status.toLowerCase().replace(/\s+/g, '-')}`}>
+                  <span className={`status-tag ${String(task.status).toLowerCase().replace(/\s+/g, '-')}`}>
                     {task.status}
                   </span>
                 </div>
                 <span>{task.teacher}</span>
                 <small>{task.detail}</small>
-                <small>Due: {task.dueDate}</small>
-                {task.completedAt ? <small>Completed: {task.completedAt}</small> : null}
+                <TaskTimeline task={task} />
                 {task.driveLink ? <a href={task.driveLink} target="_blank" rel="noopener noreferrer">Open note</a> : null}
               </div>
             ))}
@@ -438,17 +618,38 @@ function ParentDashboard() {
 
         <article className="panel">
           <div className="panel-head">
-            <h3>Appointment notifications</h3>
+            <h3>Meeting requests</h3>
           </div>
           <div className="stack-list">
             {appointmentMeetings.map((meeting) => (
               <div key={meeting.id} className="info-card">
-                <strong>{meeting.title || 'Meeting appointment'}</strong>
-                <span>{new Date(meeting.requestedAt).toLocaleString()}</span>
-                <small>{meeting.detail || 'Your requested slot was accepted by teacher.'}</small>
+                <div className="row-between">
+                  <strong>{meeting.title || 'Meeting request'}</strong>
+                  <span className={`status-tag ${getMeetingStatus(meeting).toLowerCase()}`}>
+                    {getMeetingStatus(meeting)}
+                  </span>
+                </div>
+                <span>{getMeetingStatus(meeting) === 'ACCEPTED' ? 'Scheduled time' : 'Requested time'}: {getMeetingTime(meeting)}</span>
+                <small>{meeting.detail || (getMeetingStatus(meeting) === 'ACCEPTED' ? 'Teacher accepted this meeting request.' : 'Waiting for teacher confirmation.')}</small>
               </div>
             ))}
-            {appointmentMeetings.length === 0 && <p style={{ padding: '1rem', color: '#666' }}>No accepted appointments yet</p>}
+            {appointmentMeetings.length === 0 && <p style={{ padding: '1rem', color: '#666' }}>No meeting requests yet</p>}
+          </div>
+        </article>
+
+        <article className="panel">
+          <div className="panel-head">
+            <h3>Upcoming events</h3>
+          </div>
+          <div className="stack-list">
+            {parentEvents.map((item) => (
+              <div key={item.id} className="info-card">
+                <strong>{item.title}</strong>
+                <span>{formatEventTimeRange(item)}</span>
+                <small>{item.detail || 'School event update'}</small>
+              </div>
+            ))}
+            {parentEvents.length === 0 && <p style={{ padding: '1rem', color: '#666' }}>No events yet</p>}
           </div>
         </article>
 

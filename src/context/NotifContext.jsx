@@ -10,6 +10,7 @@ export function NotifProvider({ children }) {
 
   useEffect(() => {
     let ignore = false;
+    let unsubscribe = () => {};
 
     const loadNotifications = async () => {
       if (!user) {
@@ -30,9 +31,17 @@ export function NotifProvider({ children }) {
     };
 
     loadNotifications();
+    if (user) {
+      unsubscribe = notificationsService.subscribe((data) => {
+        if (!ignore) {
+          setNotifications(Array.isArray(data) ? data : []);
+        }
+      });
+    }
 
     return () => {
       ignore = true;
+      unsubscribe();
     };
   }, [user]);
 

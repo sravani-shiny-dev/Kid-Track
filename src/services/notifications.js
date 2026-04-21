@@ -1,6 +1,6 @@
 import api from './api';
 
-const POLL_INTERVAL = 30000; // Poll every 30 seconds
+const POLL_INTERVAL = 15000;
 
 class NotificationsService {
   constructor() {
@@ -8,6 +8,7 @@ class NotificationsService {
     this.pollingInterval = null;
     this.lastNotificationCount = 0;
     this.cachedNotifications = [];
+    this.lastSnapshot = '[]';
   }
 
   /**
@@ -52,12 +53,18 @@ class NotificationsService {
    */
   async markAsRead(notificationId) {
     try {
-      const response = await api.put(`/notifications/${notificationId}/read`);
+      const response = await api.patch(`/notifications/${notificationId}/read`);
       // Update cache immediately
       const notification = this.cachedNotifications.find((n) => n.id === notificationId);
       if (notification) {
         notification.read = true;
       }
+      this.lastSnapshot = JSON.stringify(this.cachedNotifications.map((n) => ({
+        id: n.id,
+        read: n.read,
+        createdAt: n.createdAt
+      })));
+      this.notifySubscribers([...this.cachedNotifications]);
       return response.data;
     } catch (error) {
       console.error('Error marking notification as read:', error);
@@ -69,11 +76,17 @@ class NotificationsService {
    */
   async markAllAsRead() {
     try {
-      const response = await api.put('/notifications/read-all');
+      const response = await api.patch('/notifications/read-all');
       // Update cache
       this.cachedNotifications.forEach((n) => {
         n.read = true;
       });
+      this.lastSnapshot = JSON.stringify(this.cachedNotifications.map((n) => ({
+        id: n.id,
+        read: n.read,
+        createdAt: n.createdAt
+      })));
+      this.notifySubscribers([...this.cachedNotifications]);
       return response.data;
     } catch (error) {
       console.error('Error marking all notifications as read:', error);
@@ -87,17 +100,27 @@ class NotificationsService {
     // Initial fetch to populate cache
     this.getNotifications().then((notifications) => {
       this.lastNotificationCount = notifications.length;
+      this.lastSnapshot = JSON.stringify(notifications.map((n) => ({
+        id: n.id,
+        read: n.read,
+        createdAt: n.createdAt
+      })));
       this.notifySubscribers(notifications);
     });
 
     // Set up polling interval
     this.pollingInterval = setInterval(async () => {
+      const previousSnapshot = this.lastSnapshot;
       const notifications = await this.getNotifications();
-      
-      // Only notify if notification count or read status changed
-      const hasUnread = notifications.some((n) => !n.read);
-      if (notifications.length !== this.lastNotificationCount || hasUnread) {
+      const snapshot = JSON.stringify(notifications.map((n) => ({
+        id: n.id,
+        read: n.read,
+        createdAt: n.createdAt
+      })));
+
+      if (notifications.length !== this.lastNotificationCount || snapshot !== previousSnapshot) {
         this.lastNotificationCount = notifications.length;
+        this.lastSnapshot = snapshot;
         this.notifySubscribers(notifications);
       }
     }, POLL_INTERVAL);
@@ -139,6 +162,7 @@ class NotificationsService {
   clearCache() {
     this.cachedNotifications = [];
     this.lastNotificationCount = 0;
+    this.lastSnapshot = '[]';
   }
 }
 
